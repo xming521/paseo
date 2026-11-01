@@ -20,7 +20,10 @@ interface Options {
   logger: Pick<Logger, "debug" | "info" | "warn">;
   now?: () => number;
   schedule?: (tick: () => void, intervalMs: number) => () => void;
+  /** Idle time before collection, per provider id; `default` covers the rest. */
+  idlePeriodMs?: IdlePeriods;
 }
+type IdlePeriods = Readonly<Record<string, number>>;
 interface CollectionEntry {
   agentId: string;
   provider: string;
@@ -31,6 +34,25 @@ interface CollectionResult {
   failures: Array<{ agentId: string; error: unknown }>;
 }
 const IDLE_PERIOD_MS = 60 * 60_000;
+const SWEEP_INTERVAL_MS = 60_000;
+const MIN_SWEEP_INTERVAL_MS = 5_000;
+
+/**
+ * Reads PASEO_IDLE_RUNTIME_MS: either one duration in milliseconds for every provider, or
+ * `provider=ms` pairs separated by commas, where `default=ms` replaces the one-hour default.
+ * A short period for a provider whose loaded session locks out other clients (Codex) lets
+ * the same CLI in a terminal take the session over soon after Paseo goes quiet.
+ */
+export function parseIdlePeriods(value: string | undefined): IdlePeriods {
+  const periods: Record<string, number> = {};
+  if (!value?.trim()) return periods;
+  for (const part of value.split(",")) {
+    const [key, raw] = part.includes("=") ? part.split("=", 2) : ["default", part];
+    const ms = Number(raw?.trim());
+    if (key?.trim() && Number.isFinite(ms) && ms > 0) periods[key.trim()] = ms;
+  }
+  return periods;
+}
 
 /** Owns idle clocks, baseline eligibility, optional provider vetoes and the sweep lifetime. */
 export function createIdleRuntimeCleanup(options: Options) {
@@ -41,6 +63,9 @@ export function createIdleRuntimeCleanup(options: Options) {
   let generation = 0;
   const isProtected = options.isProtected ?? (() => false);
   const now = options.now ?? Date.now;
+  const idlePeriods = options.idlePeriodMs ?? {};
+  const idlePeriodFor = (provider: string) =>
+    idlePeriods[provider] ?? idlePeriods.default ?? IDLE_PERIOD_MS;
 
   function familyOf(root: RuntimeCleanupCandidate, runtimes: readonly RuntimeCleanupCandidate[]) {
     const family = new Map([[root.agentId, root]]);
@@ -99,7 +124,7 @@ export function createIdleRuntimeCleanup(options: Options) {
           runtime.lastActivityAt,
           protectedAt.get(runtime.identity)?.at ?? 0,
         );
-        if (timestamp - idleSince < IDLE_PERIOD_MS) continue;
+        if (timestamp - idleSince < idlePeriodFor(runtime.provider)) continue;
         const revalidate = () => {
           const currentFamily = familyOf(runtime, options.runtimes());
           return (
@@ -150,7 +175,7 @@ export function createIdleRuntimeCleanup(options: Options) {
     });
   const cancel = schedule(() => {
     void sweep().catch((error) => options.logger.warn({ err: error }, "Idle runtime sweep failed"));
-  }, 60_000);
+  }, Math.max(MIN_SWEEP_INTERVAL_MS, Math.min(SWEEP_INTERVAL_MS, ...Object.values(idlePeriods))));
   return {
     sweep,
     setEnabled(value: boolean) {

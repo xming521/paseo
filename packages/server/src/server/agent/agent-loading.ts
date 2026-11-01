@@ -34,7 +34,7 @@ export type AgentLoaderManager = Pick<
   | "hydrateTimelineFromProvider"
   | "resumeAgentFromPersistence"
 > &
-  Partial<Pick<AgentManager, "waitForAgentClose">>;
+  Partial<Pick<AgentManager, "waitForAgentClose" | "reconcileExternalTranscript">>;
 
 export interface EnsureAgentLoadedDeps {
   agentManager: AgentLoaderManager;
@@ -142,6 +142,9 @@ export async function ensureAgentLoaded(
     await deps.agentManager.hydrateTimelineFromProvider(agentId, {
       broadcast: () => pendingOptions.broadcastTimeline,
     });
+    if (handle && !record.archivedAt) {
+      await deps.agentManager.reconcileExternalTranscript?.(agentId);
+    }
     return deps.agentManager.getAgent(agentId) ?? snapshot;
   })();
 

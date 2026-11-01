@@ -703,6 +703,11 @@ export interface AgentSession {
   canStopRuntime?(): Promise<boolean>;
   /** Release live runtime resources without archiving or deleting the durable native session. */
   close(): Promise<void>;
+  /** Names the newest conversation message in the provider's on-disk session, so the manager
+   * notices when another client (the same CLI in a terminal) continued it. */
+  readTranscriptMarker?(): Promise<string | null>;
+  /** True when this live runtime wrote the message `marker` names, not another client. */
+  ownsTranscriptMarker?(marker: string): boolean;
   listCommands?(): Promise<AgentSlashCommand[]>;
   setModel?(modelId: string | null): Promise<void>;
   setThinkingOption?(thinkingOptionId: string | null): Promise<void | AgentProviderNotice>;

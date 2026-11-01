@@ -75,7 +75,9 @@ function applyRuntimeSettingsToClaudeOptions(
       });
       // Session-open hooks may explicitly supply a client identity. Keep inherited
       // SDK/parent identities cleared while honoring this launch-only contribution.
-      providerEnvSpec.envOverlay.CLAUDE_CODE_ENTRYPOINT = launchEnv?.CLAUDE_CODE_ENTRYPOINT;
+      // Without one, Claude Code would record "sdk-cli", which its /resume picker hides.
+      providerEnvSpec.envOverlay.CLAUDE_CODE_ENTRYPOINT =
+        launchEnv?.CLAUDE_CODE_ENTRYPOINT ?? "paseo";
       const providerEnv = createExternalProcessEnv(spawnOptions.env, providerEnvSpec.envOverlay);
       const selfNodeCommand = isDefaultRuntime
         ? buildSelfNodeCommand(resolved.args, providerEnv)

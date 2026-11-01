@@ -84,6 +84,7 @@ import {
 } from "./rewind.js";
 import { normalizeProviderReplayTimestamp } from "../../provider-history-timestamps.js";
 import { claudeConfigDir, claudeProjectDirSync, claudeTranscriptPath } from "./project-dir.js";
+import { readClaudeTranscriptMarker } from "../../transcript-marker.js";
 import { THINKING_APPLIES_NEXT_TURN_NOTICE } from "../../provider-notices.js";
 import {
   isProviderImageMarkdown,
@@ -2278,6 +2279,8 @@ class ClaudeAgentSession implements AgentSession {
   /** Human steers whose text has not reached Claude yet and therefore supersede blocking cards. */
   private readonly permissionClearingSteerUuids = new Set<string>();
   private claudeSessionId: string | null;
+  /** Main-chain transcript uuids this runtime streamed, to tell its writes from a terminal's. */
+  private readonly streamedTranscriptUuids = new Set<string>();
   private persistence: AgentPersistenceHandle | null;
   private currentMode: PermissionMode;
   private planResumeMode: PermissionMode | null = null;
@@ -2500,7 +2503,10 @@ class ClaudeAgentSession implements AgentSession {
     this.contextUsage.beginTurn();
     this.transitionTurnState("foreground", "foreground turn started");
     this.clearRecentStderr();
-    if (sdkUserMessageId) this.unstartedMessageUuids.add(sdkUserMessageId);
+    if (sdkUserMessageId) {
+      this.unstartedMessageUuids.add(sdkUserMessageId);
+      this.streamedTranscriptUuids.add(sdkUserMessageId);
+    }
 
     let cancelIssued = false;
     const requestCancel = () => {
@@ -2603,7 +2609,10 @@ class ClaudeAgentSession implements AgentSession {
     clearPendingPermissions: boolean,
   ): void {
     const uuid = message.uuid;
-    if (uuid) this.unstartedMessageUuids.add(uuid);
+    if (uuid) {
+      this.unstartedMessageUuids.add(uuid);
+      this.streamedTranscriptUuids.add(uuid);
+    }
     if (uuid && clearPendingPermissions) {
       this.permissionClearingSteerUuids.add(uuid);
     }
@@ -3370,6 +3379,7 @@ class ClaudeAgentSession implements AgentSession {
     if (readClaudeParentToolUseId(message)) {
       return;
     }
+    this.streamedTranscriptUuids.add(messageId);
     if (
       message.type === "user" &&
       !isSyntheticUserEntry(message) &&
@@ -5483,6 +5493,16 @@ class ClaudeAgentSession implements AgentSession {
         });
       }
     }
+  }
+
+  async readTranscriptMarker(): Promise<string | null> {
+    if (!this.claudeSessionId) return null;
+    const historyPath = await this.resolveHistoryPath(this.claudeSessionId);
+    return historyPath ? readClaudeTranscriptMarker(historyPath) : null;
+  }
+
+  ownsTranscriptMarker(marker: string): boolean {
+    return this.streamedTranscriptUuids.has(marker);
   }
 
   private async resolveHistoryPath(sessionId: string): Promise<string | null> {

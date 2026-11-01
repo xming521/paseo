@@ -469,6 +469,8 @@ export function wrapSessionProvider(provider: AgentProvider, inner: AgentSession
     describePersistence: () => mapPersistenceHandle(provider, inner.describePersistence()),
     interrupt: () => inner.interrupt(),
     close: () => inner.close(),
+    readTranscriptMarker: inner.readTranscriptMarker?.bind(inner),
+    ownsTranscriptMarker: inner.ownsTranscriptMarker?.bind(inner),
     canStopRuntime: inner.canStopRuntime?.bind(inner),
     listCommands: inner.listCommands?.bind(inner),
     setModel: inner.setModel?.bind(inner),

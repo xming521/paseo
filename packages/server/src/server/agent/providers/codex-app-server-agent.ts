@@ -40,6 +40,7 @@ import {
   type ResolveAgentDefaultModeInput,
 } from "../agent-sdk-types.js";
 import { importSessionFromPersistence } from "../provider-session-import.js";
+import { findCodexRolloutFile, readCodexRolloutMarker } from "../transcript-marker.js";
 import { runProviderRefreshActivity } from "../provider-refresh-deadline.js";
 import type { Logger } from "pino";
 
@@ -3442,6 +3443,7 @@ export class CodexAppServerAgentSession implements AgentSession {
   > | null = null;
   private resolvedSandboxPolicy: Record<string, unknown> | null = null;
   private currentThreadId: string | null = null;
+  private rolloutFile: { threadId: string; path: string } | null = null;
   private currentTurnId: string | null = null;
   private pendingForegroundTurnIdentification: {
     foregroundTurnId: string;
@@ -5059,6 +5061,26 @@ export class CodexAppServerAgentSession implements AgentSession {
       if (response.data.length > 0 || response.nextCursor !== null) return false;
     }
     return !this.client.hasPendingRequests();
+  }
+
+  async readTranscriptMarker(): Promise<string | null> {
+    const threadId = this.currentThreadId;
+    if (!threadId) return null;
+    if (this.rolloutFile?.threadId !== threadId) {
+      const found = await findCodexRolloutFile(this.codexHome, threadId);
+      if (!found) return null;
+      this.rolloutFile = { threadId, path: found };
+    }
+    const marker = await readCodexRolloutMarker(this.rolloutFile.path);
+    if (marker !== null) return marker;
+    // Archiving moves the rollout; look it up again next time.
+    this.rolloutFile = null;
+    return null;
+  }
+
+  ownsTranscriptMarker(): boolean {
+    // A loaded thread has one writer, so nothing else can append while this runtime is open.
+    return !this.closed;
   }
 
   async close(): Promise<void> {

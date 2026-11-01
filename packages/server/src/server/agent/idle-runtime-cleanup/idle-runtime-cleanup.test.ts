@@ -1,6 +1,10 @@
 import { expect, onTestFinished, test } from "vitest";
 import { createTestLogger } from "../../../test-utils/test-logger.js";
-import { createIdleRuntimeCleanup, type RuntimeCleanupCandidate } from "./index.js";
+import {
+  createIdleRuntimeCleanup,
+  parseIdlePeriods,
+  type RuntimeCleanupCandidate,
+} from "./index.js";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -291,4 +295,36 @@ test("disabling lets a started close finish but prevents the next closure in tha
   expect((await s.sweep(62)).collected).toEqual([
     { agentId: "sibling", provider: "test", sessionId: "sibling" },
   ]);
+});
+
+test("idle periods parse one duration or provider=ms pairs", () => {
+  expect(parseIdlePeriods(undefined)).toEqual({});
+  expect(parseIdlePeriods("120000")).toEqual({ default: 120_000 });
+  expect(parseIdlePeriods(" codex=30000, default=600000,bad=x,=5")).toEqual({
+    codex: 30_000,
+    default: 600_000,
+  });
+});
+
+test("a provider's idle period overrides the hour and shortens the sweep", async () => {
+  const runtime = new Runtime();
+  let time = 0;
+  let interval = 0;
+  const cleanup = createIdleRuntimeCleanup({
+    enabled: true,
+    logger: createTestLogger(),
+    now: () => time,
+    runtimes: () => (runtime.closed ? [] : [runtime.capture()]),
+    idlePeriodMs: { test: 30_000 },
+    schedule: (_callback, ms) => {
+      interval = ms;
+      return () => {};
+    },
+  });
+  onTestFinished(() => cleanup.close());
+  expect(interval).toBe(30_000);
+  time = 29_000;
+  expect((await cleanup.sweep()).collected).toEqual([]);
+  time = 30_000;
+  expect((await cleanup.sweep()).collected).toHaveLength(1);
 });

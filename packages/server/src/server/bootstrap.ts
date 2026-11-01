@@ -1,4 +1,7 @@
-import { createIdleRuntimeCleanup } from "./agent/idle-runtime-cleanup/index.js";
+import {
+  createIdleRuntimeCleanup,
+  parseIdlePeriods,
+} from "./agent/idle-runtime-cleanup/index.js";
 import {
   createFinishSubscriptions,
   createFinishObservation,
@@ -1483,6 +1486,7 @@ export async function createPaseoDaemon(
       finishSubscriptions.hasPendingForCaller(agentId) ||
       (wsServer?.agentMessages.hasPending(agentId) ?? false),
     logger,
+    idlePeriodMs: parseIdlePeriods(process.env.PASEO_IDLE_RUNTIME_MS),
   });
 
   const unsubscribeIdleRuntimeCleanup = connectIdleRuntimeCleanupConfig(

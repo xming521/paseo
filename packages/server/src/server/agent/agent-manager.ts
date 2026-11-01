@@ -770,6 +770,8 @@ export class AgentManager {
   private readonly inFlightAgentCloses = new Map<string, Promise<void>>();
   private readonly reloadedSessionCloses = new WeakMap<AgentSession, Promise<void>>();
   private readonly runtimeCleanupIdentities = new WeakMap<AgentSession, object>();
+  /** Newest on-disk transcript message each agent's timeline reflects; survives runtime close. */
+  private readonly transcriptMarkers = new Map<string, string | null>();
   private readonly collectingRuntimes = new Set<string>();
   private readonly lifecycleMutationTails = new Map<string, Promise<void>>();
   private readonly agentStreamCoalescer: AgentStreamCoalescer;
@@ -906,6 +908,20 @@ export class AgentManager {
   }
 
   async reloadStalePluginSession(agentId: string): Promise<void> {
+    if (await this.hasExternalTranscriptWrites(agentId)) {
+      await this.trackAgentRegistrationOperation(
+        this.runLifecycleMutation(agentId, async () => {
+          if (this.hasInFlightRun(agentId) || !(await this.hasExternalTranscriptWrites(agentId)))
+            return;
+          // Another client continued the session while this runtime sat idle. Its in-memory
+          // conversation is stale, and a prompt sent into it would fork the transcript.
+          this.logger.info({ agentId }, "Session continued outside Paseo; reloading from disk");
+          await this.reloadAgentSessionInternal(agentId, undefined, { rehydrateFromDisk: true });
+          await this.hydrateTimelineFromProvider(agentId, { broadcast: true });
+        }),
+      );
+      return;
+    }
     if (!this.needsPluginSessionReload(agentId)) return;
     await this.trackAgentRegistrationOperation(
       this.runLifecycleMutation(agentId, async () => {
@@ -913,6 +929,68 @@ export class AgentManager {
         await this.reloadAgentSessionInternal(agentId);
       }),
     );
+  }
+
+  private async readTranscriptMarker(session: AgentSession): Promise<string | null | undefined> {
+    if (!session.readTranscriptMarker) return undefined;
+    try {
+      return await session.readTranscriptMarker();
+    } catch (error) {
+      this.logger.warn({ err: error }, "Failed to read provider transcript marker");
+      return undefined;
+    }
+  }
+
+  private async recordTranscriptMarker(agentId: string): Promise<void> {
+    const agent = this.agents.get(agentId);
+    if (!agent) return;
+    const marker = await this.readTranscriptMarker(agent.session);
+    if (marker !== undefined) this.transcriptMarkers.set(agentId, marker);
+  }
+
+  private async hasExternalTranscriptWrites(agentId: string): Promise<boolean> {
+    const agent = this.agents.get(agentId);
+    if (!agent || this.hasInFlightRun(agentId)) return false;
+    const marker = await this.readTranscriptMarker(agent.session);
+    if (marker === undefined) return false;
+    const recorded = this.transcriptMarkers.get(agentId);
+    if (
+      recorded === undefined ||
+      marker === recorded ||
+      marker === null ||
+      agent.session.ownsTranscriptMarker?.(marker)
+    ) {
+      this.transcriptMarkers.set(agentId, marker);
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Called after a closed agent resumes from persistence. When another client continued the
+   * session meanwhile, the timeline is replaced with the provider's history. The resumed runtime
+   * read the session from disk, so its conversation is already current.
+   */
+  async reconcileExternalTranscript(agentId: string): Promise<void> {
+    const agent = this.agents.get(agentId);
+    if (!agent) return;
+    const marker = await this.readTranscriptMarker(agent.session);
+    if (marker === undefined) return;
+    const recorded = this.transcriptMarkers.get(agentId);
+    this.transcriptMarkers.set(agentId, marker);
+    // An unknown marker means the daemon restarted since this timeline was built.
+    if (recorded === marker) return;
+    this.logger.info({ agentId }, "Session changed outside Paseo; replacing timeline");
+    await this.hydrateTimelineFromProvider(agentId, {
+      force: true,
+      broadcast: true,
+      broadcastTimeline: false,
+    });
+    this.dispatch({
+      type: "timeline_replacement",
+      agentId,
+      epoch: this.timelineStore.getEpoch(agentId),
+    });
   }
 
   private needsPluginSessionReload(agentId: string): boolean {
@@ -1714,6 +1792,12 @@ export class AgentManager {
         }
       }
 
+      if (rehydrateFromDisk) {
+        // The new runtime and the timeline about to be rebuilt both come from disk.
+        const marker = await this.readTranscriptMarker(session);
+        if (marker !== undefined) this.transcriptMarkers.set(agentId, marker);
+      }
+
       // Preserve existing labels and timeline during reload.
       handedToRegistration = true;
       return this.registerSession(session, storedConfig, agentId, {
@@ -1936,6 +2020,9 @@ export class AgentManager {
     );
     await this.drainSessionEvents(agentId);
     if (canClose && !canClose()) return false;
+    // The timeline now reflects everything this runtime wrote. A later resume compares
+    // against this marker to notice turns another client added while Paseo was closed.
+    await this.recordTranscriptMarker(agentId);
     // Retain ownership until shutdown succeeds. A failed close may still own a
     // native writer, so publishing a resumable closed snapshot would orphan it.
     await agent.session.close();
@@ -3502,6 +3589,7 @@ export class AgentManager {
 
   async deleteAgentState(agentId: string): Promise<void> {
     this.discardRetainedAgentState(agentId);
+    this.transcriptMarkers.delete(agentId);
     await this.deleteCommittedTimeline(agentId);
   }
 
@@ -4796,6 +4884,7 @@ export class AgentManager {
       this.emitState(agent);
     }
     void this.refreshRuntimeInfo(agent);
+    void this.recordTranscriptMarker(agent.id);
   }
 
   private async onStreamTurnFailed(params: {
