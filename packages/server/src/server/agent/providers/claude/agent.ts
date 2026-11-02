@@ -2406,7 +2406,11 @@ class ClaudeAgentSession implements AgentSession {
       );
     }
 
-    this.currentMode = isPermissionMode(config.modeId) ? config.modeId : "default";
+    // A session nobody chose a mode for, such as one started in a terminal and opened here,
+    // starts in the provider's default, the mode the composer offers for a new chat.
+    this.currentMode = isPermissionMode(config.modeId)
+      ? config.modeId
+      : claudeModeCatalog(this.harnessEnvironment).defaultModeId;
     if (this.currentMode !== "plan") {
       this.planResumeMode = this.currentMode;
     }
