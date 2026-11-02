@@ -6948,6 +6948,31 @@ describe("Codex importable sessions", () => {
     appServer.assertNoErrors();
   });
 
+  test("dates a thread's prompts by recencyAt, which opening a thread leaves alone", async () => {
+    const appServer = createFakeCodexAppServer({
+      "thread/list": cappedThreadListHandler([
+        {
+          id: "opened",
+          cwd: "/workspace/project-a",
+          preview: "opened",
+          createdAt: 100,
+          recencyAt: 200,
+          updatedAt: 900,
+        },
+      ]),
+    });
+    const provider = createProviderWithFakeAppServer(appServer);
+
+    const [session] = await provider.listImportableSessions({ limit: 1 });
+
+    expect(session).toMatchObject({
+      firstPromptAt: new Date(100_000),
+      lastPromptAt: new Date(200_000),
+      lastActivityAt: new Date(900_000),
+    });
+    appServer.assertNoErrors();
+  });
+
   test("keeps the scanned window on the most recently used threads", async () => {
     const threads = threadsUsedInReverseCreationOrder(550);
     const appServer = createFakeCodexAppServer({

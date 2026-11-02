@@ -7450,9 +7450,15 @@ export class CodexAppServerAgentClient implements AgentClient {
         const preview = typeof thread.preview === "string" ? thread.preview : null;
         const title = typeof thread.name === "string" && thread.name.trim() ? thread.name : preview;
         const originator = typeof thread.originator === "string" ? thread.originator : null;
+        // Codex moves updatedAt whenever a thread is rewritten, including when one is only
+        // opened. recencyAt moves with the person's turns.
+        const createdAt = typeof thread.createdAt === "number" ? thread.createdAt : null;
+        const recencyAt = typeof thread.recencyAt === "number" ? thread.recencyAt : null;
 
         return {
           ...(originator ? { interactive: !CODEX_SCRIPTED_ORIGINATOR.test(originator) } : {}),
+          ...(createdAt !== null ? { firstPromptAt: new Date(createdAt * 1000) } : {}),
+          ...(recencyAt !== null ? { lastPromptAt: new Date(recencyAt * 1000) } : {}),
           providerHandleId: threadId,
           cwd,
           title,

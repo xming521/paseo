@@ -1625,6 +1625,7 @@ export class AgentManager {
     workspaceId: string;
     title: string | null;
     lastActivityAt: Date;
+    archived: boolean;
   }): Promise<StoredAgentRecord> {
     if (!this.registry) {
       throw new Error("Agent storage is not configured");
@@ -1643,30 +1644,46 @@ export class AgentManager {
   }
 
   /**
-   * Brings an agent that is not loaded up to its session's newer activity time and, when given,
-   * title. A loaded agent keeps its own state.
+   * Updates the record of an agent that is not loaded: moves its activity up to the session's
+   * newer prompt, and sets its title, workspace or archived state. A loaded agent keeps its own
+   * state. Archiving here leaves the provider's own copy of the session alone. Returns whether
+   * the record changed.
    */
-  async refreshStoredActivity(
+  async updateExternalSession(
     agentId: string,
-    update: { lastActivityAt: Date; title?: string | null },
-  ): Promise<void> {
-    if (!this.registry || this.agents.has(agentId)) return;
-    const at = update.lastActivityAt.toISOString();
+    update: {
+      lastActivityAt?: Date;
+      title?: string | null;
+      workspaceId?: string;
+      archived?: boolean;
+    },
+  ): Promise<boolean> {
+    if (!this.registry || this.agents.has(agentId)) return false;
     const record = await this.registry.update(agentId, (current) => {
       if (this.agents.has(agentId)) return null;
-      const newer =
-        Date.parse(current.lastActivityAt ?? current.updatedAt) < update.lastActivityAt.getTime();
-      const retitle = update.title !== undefined && update.title !== current.title;
-      if (!newer && !retitle) return null;
-      return {
-        ...current,
-        ...(newer ? { lastActivityAt: at, updatedAt: at } : {}),
-        ...(retitle ? { title: update.title } : {}),
-      };
+      const next = { ...current };
+      const activity = update.lastActivityAt;
+      if (
+        activity &&
+        Date.parse(current.lastActivityAt ?? current.updatedAt) < activity.getTime()
+      ) {
+        const at = activity.toISOString();
+        Object.assign(next, { lastActivityAt: at, lastUserMessageAt: at, updatedAt: at });
+      }
+      if (update.title !== undefined) next.title = update.title;
+      if (update.workspaceId !== undefined) next.workspaceId = update.workspaceId;
+      if (update.archived !== undefined && update.archived !== Boolean(current.archivedAt)) {
+        next.archivedAt = update.archived ? new Date().toISOString() : null;
+      }
+      const changed = (Object.keys(next) as Array<keyof StoredAgentRecord>).some(
+        (key) => next[key] !== current[key],
+      );
+      return changed ? next : null;
     });
     if (record && !record.internal && !this.agents.has(agentId)) {
       this.dispatchStoredAgentState(record);
     }
+    return record !== null;
   }
 
   private async importProviderSessionInternal(input: {

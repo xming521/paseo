@@ -239,6 +239,58 @@ describe("importing a renamed Claude session", () => {
 });
 
 describe("listing Claude sessions", () => {
+  test("notes whether the model ever replied", async () => {
+    await writeSession({
+      sessionId: "commands-only",
+      records: [
+        userRecord({ sessionId: "commands-only", content: "<command-name>/clear</command-name>" }),
+      ],
+    });
+    await writeSession({
+      sessionId: "answered",
+      records: [
+        userRecord({ sessionId: "answered", content: "Review this project" }),
+        { type: "assistant", isSidechain: false, sessionId: "answered", message: { content: [] } },
+      ],
+    });
+    const client = new ClaudeAgentClient({
+      logger: createTestLogger(),
+      resolveBinary: async () => "/test/claude/bin",
+    });
+
+    const sessions = await client.listImportableSessions({ limit: 10, cwd: SESSION_CWD });
+
+    expect(
+      Object.fromEntries(sessions.map((session) => [session.providerHandleId, session.replied])),
+    ).toEqual({ "commands-only": false, answered: true });
+  });
+
+  test("reads when the first and the latest prompt were sent", async () => {
+    const prompt = (content: string, timestamp: string) => ({
+      ...userRecord({ sessionId: "timed", content }),
+      timestamp,
+    });
+    await writeSession({
+      sessionId: "timed",
+      records: [
+        prompt("First", "2026-11-01T08:00:00.000Z"),
+        prompt("Second", "2026-11-01T09:30:00.000Z"),
+        { type: "ai-title", aiTitle: "Timed session", sessionId: "timed" },
+      ],
+    });
+    const client = new ClaudeAgentClient({
+      logger: createTestLogger(),
+      resolveBinary: async () => "/test/claude/bin",
+    });
+
+    const [session] = await client.listImportableSessions({ limit: 1, cwd: SESSION_CWD });
+
+    expect(session).toMatchObject({
+      firstPromptAt: new Date("2026-11-01T08:00:00.000Z"),
+      lastPromptAt: new Date("2026-11-01T09:30:00.000Z"),
+    });
+  });
+
   test("marks a session interactive when a person typed into it", async () => {
     const entry = (sessionId: string, entrypoint: string) => ({
       ...userRecord({ sessionId, content: "Review this project" }),

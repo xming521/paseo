@@ -6669,8 +6669,14 @@ interface ClaudeSessionDescriptorAccumulator {
   lastPromptPreview: string | null;
   /** Null until a user entry names its entrypoint. */
   interactive: boolean | null;
+  firstPromptAt: Date | null;
+  lastPromptAt: Date | null;
+  replied: boolean;
 }
 
+// Matched on the raw line, so the large replies themselves are never parsed.
+const CLAUDE_REPLY_RECORD_PATTERN = /"type"\s*:\s*"assistant"/;
+const CLAUDE_SIDECHAIN_RECORD_PATTERN = /"isSidechain"\s*:\s*true/;
 const CLAUDE_IMPORT_DESCRIPTOR_RECORD_PATTERN = /"type"\s*:\s*"(?:user|custom-title|ai-title)"/;
 const CLAUDE_SESSION_ID_KEY_PATTERN = /"sessionId"\s*:/;
 const CLAUDE_CWD_KEY_PATTERN = /"cwd"\s*:/;
@@ -6726,6 +6732,11 @@ function applyClaudeSessionEntryToAccumulator(
       const preview = normalizeImportablePromptPreview(text);
       acc.firstPromptPreview ??= preview;
       acc.lastPromptPreview = preview;
+      const sentAt = typeof entry.timestamp === "string" ? new Date(entry.timestamp) : null;
+      if (sentAt && !Number.isNaN(sentAt.getTime())) {
+        acc.firstPromptAt ??= sentAt;
+        acc.lastPromptAt = sentAt;
+      }
     }
     return;
   }
@@ -6745,6 +6756,9 @@ async function parseClaudeSessionDescriptor(
     firstPromptPreview: null,
     lastPromptPreview: null,
     interactive: null,
+    firstPromptAt: null,
+    lastPromptAt: null,
+    replied: false,
   };
 
   // Keep only the current record, including image records larger than a read chunk.
@@ -6752,6 +6766,13 @@ async function parseClaudeSessionDescriptor(
   const stream = fs.createReadStream(filePath, { highWaterMark: 64 * 1024, signal });
   function applyRecord(): void {
     const line = Buffer.concat(record).toString("utf8");
+    if (
+      !acc.replied &&
+      CLAUDE_REPLY_RECORD_PATTERN.test(line) &&
+      !CLAUDE_SIDECHAIN_RECORD_PATTERN.test(line)
+    ) {
+      acc.replied = true;
+    }
     if (!line || !shouldParseClaudeSessionDescriptorLine(line, acc)) return;
     let entry: unknown;
     try {
@@ -6798,6 +6819,9 @@ async function parseClaudeSessionDescriptor(
     lastPromptPreview: acc.lastPromptPreview,
     lastActivityAt: mtime,
     ...(acc.interactive === null ? {} : { interactive: acc.interactive }),
+    ...(acc.firstPromptAt ? { firstPromptAt: acc.firstPromptAt } : {}),
+    ...(acc.lastPromptAt ? { lastPromptAt: acc.lastPromptAt } : {}),
+    replied: acc.replied,
   };
 }
 

@@ -348,8 +348,9 @@ export function selectAgentListItems(
 }
 
 /**
- * The record of a provider session that runs outside Paseo. It is archived, so it lists under
- * History rather than opening as a tab, and its persistence handle is the one an import builds.
+ * The record of a provider session that runs outside Paseo, with the persistence handle an import
+ * builds. An archived one lists only under History. The session's last prompt counts as its last
+ * user message.
  */
 export function toExternalSessionRecord(input: {
   id: string;
@@ -359,6 +360,7 @@ export function toExternalSessionRecord(input: {
   workspaceId: string;
   title: string | null;
   lastActivityAt: Date;
+  archived: boolean;
   config: AgentSessionConfig;
 }): StoredAgentRecord {
   const at = input.lastActivityAt.toISOString();
@@ -371,7 +373,7 @@ export function toExternalSessionRecord(input: {
     createdAt: at,
     updatedAt: at,
     lastActivityAt: at,
-    lastUserMessageAt: null,
+    lastUserMessageAt: at,
     title: input.title,
     labels: {},
     lastStatus: "closed",
@@ -384,7 +386,7 @@ export function toExternalSessionRecord(input: {
       metadata: { ...input.config, provider: input.provider, cwd: input.cwd },
     }),
     internal: false,
-    archivedAt: new Date().toISOString(),
+    archivedAt: input.archived ? new Date().toISOString() : null,
   };
 }
 

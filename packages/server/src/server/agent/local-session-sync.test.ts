@@ -3,9 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, test } from "vitest";
 import type { StoredAgentRecord } from "./agent-storage.js";
-import { startLocalSessionSync } from "./local-session-sync.js";
+import { startLocalSessionSync, type SyncWorkspace } from "./local-session-sync.js";
 
-const NOW = Date.parse("2026-11-02T12:00:00Z");
+const START = Date.parse("2026-11-02T12:00:00Z");
+const MINUTE = 60_000;
+const DAY = 24 * 60 * MINUTE;
 const CWD = "/repo";
 const dirs: string[] = [];
 afterEach(async () => {
@@ -18,134 +20,288 @@ interface FakeSession {
   cwd: string;
   title: string | null;
   lastActivityAt: Date;
+  firstPromptAt?: Date;
+  lastPromptAt?: Date;
   interactive?: boolean;
+  replied?: boolean;
   firstPromptPreview: string | null;
   lastPromptPreview: string | null;
-}
-
-function session(id: string, minutesAgo: number, extra: Partial<FakeSession> = {}): FakeSession {
-  return {
-    provider: "claude",
-    providerHandleId: id,
-    cwd: CWD,
-    title: `title ${id}`,
-    lastActivityAt: new Date(NOW - minutesAgo * 60_000),
-    firstPromptPreview: "hello",
-    lastPromptPreview: "hello",
-    ...extra,
-  };
 }
 
 async function setup() {
   const dir = await mkdtemp(path.join(os.tmpdir(), "local-session-sync-"));
   dirs.push(dir);
-  const records = new Map<string, StoredAgentRecord>();
+  let now = START;
   let sessions: FakeSession[] = [];
-  const agentManager = {
-    listImportableSessions: async () => ({ sessions, providerErrors: [] }),
-    recordExternalSession: async (input: {
-      provider: string;
-      providerHandleId: string;
-      cwd: string;
-      workspaceId: string;
-      title: string | null;
-      lastActivityAt: Date;
-    }) => {
-      const at = input.lastActivityAt.toISOString();
-      const record = {
-        id: `agent-${input.providerHandleId}`,
-        provider: input.provider,
-        cwd: input.cwd,
-        workspaceId: input.workspaceId,
-        createdAt: at,
-        updatedAt: at,
-        lastActivityAt: at,
-        title: input.title,
-        labels: {},
-        lastStatus: "closed",
-        persistence: { provider: input.provider, sessionId: input.providerHandleId },
-        archivedAt: at,
-      } as StoredAgentRecord;
-      records.set(record.id, record);
-      return record;
-    },
-    refreshStoredActivity: async (
-      agentId: string,
-      update: { lastActivityAt: Date; title?: string | null },
-    ) => {
-      const record = records.get(agentId)!;
-      const at = update.lastActivityAt.toISOString();
-      records.set(agentId, {
-        ...record,
-        lastActivityAt: at,
-        ...(update.title === undefined ? {} : { title: update.title }),
-      });
-    },
-  };
+  const records = new Map<string, StoredAgentRecord>();
+  const loaded = new Set<string>();
+  const workspace = (workspaceId: string, createdAt: number): SyncWorkspace => ({
+    workspaceId,
+    projectId: "p",
+    cwd: CWD,
+    title: null,
+    createdAt: new Date(createdAt).toISOString(),
+    archivedAt: null,
+  });
+  // Listed newest first: sessions still belong to the oldest workspace for the directory.
+  const workspaces = new Map<string, SyncWorkspace>([
+    ["home-2", workspace("home-2", START - DAY)],
+    ["home", workspace("home", START - 2 * DAY)],
+  ]);
+  const iso = () => new Date(now).toISOString();
+
   const sync = startLocalSessionSync({
     providers: ["claude"],
-    agentManager: agentManager as never,
+    agentManager: {
+      listImportableSessions: async () => ({ sessions, providerErrors: [] }),
+      recordExternalSession: async (input) => {
+        const at = input.lastActivityAt.toISOString();
+        const record = {
+          id: `agent-${input.providerHandleId}`,
+          provider: input.provider,
+          cwd: input.cwd,
+          workspaceId: input.workspaceId,
+          createdAt: at,
+          updatedAt: at,
+          lastActivityAt: at,
+          title: input.title,
+          labels: {},
+          lastStatus: "closed",
+          persistence: { provider: input.provider, sessionId: input.providerHandleId },
+          archivedAt: input.archived ? iso() : null,
+        } as StoredAgentRecord;
+        records.set(record.id, record);
+        return record;
+      },
+      updateExternalSession: async (agentId, update) => {
+        const record = records.get(agentId);
+        if (!record || loaded.has(agentId)) return false;
+        records.set(agentId, {
+          ...record,
+          ...(update.lastActivityAt ? { lastActivityAt: update.lastActivityAt.toISOString() } : {}),
+          ...(update.title !== undefined ? { title: update.title } : {}),
+          ...(update.workspaceId ? { workspaceId: update.workspaceId } : {}),
+          ...(update.archived !== undefined ? { archivedAt: update.archived ? iso() : null } : {}),
+        });
+        return true;
+      },
+      getAgent: ((agentId: string) => (loaded.has(agentId) ? {} : null)) as never,
+    } as never,
     agentStorage: { list: async () => Array.from(records.values()) },
-    workspaces: async () => [
-      { workspaceId: "ws", cwd: CWD, archivedAt: null },
-      { workspaceId: "ws-same-dir", cwd: CWD, archivedAt: null },
-    ],
+    workspaces: {
+      list: async () => Array.from(workspaces.values()),
+      create: async ({ projectId, cwd, title, createdAt }) => {
+        const workspace = {
+          workspaceId: `row-${workspaces.size}`,
+          projectId,
+          cwd,
+          title,
+          archivedAt: null,
+          createdAt: createdAt.toISOString(),
+        };
+        workspaces.set(workspace.workspaceId, workspace);
+        return workspace;
+      },
+      setArchived: async (workspaceId, archived) => {
+        workspaces.set(workspaceId, {
+          ...workspaces.get(workspaceId)!,
+          archivedAt: archived ? iso() : null,
+        });
+      },
+      setTitle: async (workspaceId, title) => {
+        workspaces.set(workspaceId, { ...workspaces.get(workspaceId)!, title });
+      },
+    },
     statePath: path.join(dir, "local-sessions.json"),
     logger: { info: () => undefined, warn: () => undefined },
-    now: () => NOW,
+    now: () => now,
     schedule: false,
   });
+
   return {
     records,
+    workspaces,
+    loaded,
     sync: () => sync.sync(),
+    advance: (ms: number) => {
+      now += ms;
+    },
+    /** A session whose latest prompt was `ago` ms before the current time. */
+    session(id: string, ago: number, extra: Partial<FakeSession> = {}): FakeSession {
+      return {
+        provider: "claude",
+        providerHandleId: id,
+        cwd: CWD,
+        title: `title ${id}`,
+        lastActivityAt: new Date(now - ago),
+        firstPromptAt: new Date(now - ago - MINUTE),
+        lastPromptAt: new Date(now - ago),
+        firstPromptPreview: "hello",
+        lastPromptPreview: "hello",
+        ...extra,
+      };
+    },
     setSessions: (next: FakeSession[]) => {
       sessions = next;
     },
+    row: (agentId: string) => workspaces.get(records.get(agentId)!.workspaceId!)!,
   };
 }
 
-test("recent sessions a person started get one archived record each", async () => {
-  const { records, sync, setSessions } = await setup();
-  setSessions([
-    session("a", 5),
-    session("sdk", 5, { interactive: false }),
-    session("old", 31 * 24 * 60),
-    session("elsewhere", 5, { cwd: "/other" }),
-    session("no-prompt", 5, { firstPromptPreview: null, lastPromptPreview: null }),
-    session("meta", 5, {
+test("a session prompted this week gets its own row, an older one lists only in History", async () => {
+  const t = await setup();
+  t.setSessions([
+    t.session("recent", DAY),
+    t.session("older", 10 * DAY),
+    t.session("sdk", DAY, { interactive: false }),
+    t.session("too-old", 31 * DAY),
+    t.session("elsewhere", DAY, { cwd: "/other" }),
+    t.session("no-prompt", DAY, { firstPromptPreview: null, lastPromptPreview: null }),
+    t.session("no-reply", DAY, { replied: false }),
+    t.session("meta", DAY, {
       firstPromptPreview: "Generate metadata for a coding agent based on the user prompt.",
     }),
   ]);
-  await sync();
-  await sync();
-  expect(Array.from(records.keys())).toEqual(["agent-a"]);
-  expect(records.get("agent-a")).toMatchObject({ workspaceId: "ws", title: "title a" });
-});
+  await t.sync();
+  await t.sync();
 
-test("a deleted record returns only after a newer turn", async () => {
-  const { records, sync, setSessions } = await setup();
-  setSessions([session("a", 10)]);
-  await sync();
-  records.delete("agent-a");
-  await sync();
-  expect(records.size).toBe(0);
-  setSessions([session("a", 1)]);
-  await sync();
-  expect(records.has("agent-a")).toBe(true);
-});
-
-test("the title follows the session until the agent is renamed in Paseo", async () => {
-  const { records, sync, setSessions } = await setup();
-  setSessions([session("a", 10, { title: "first prompt" })]);
-  await sync();
-  setSessions([session("a", 5, { title: "ai title" })]);
-  await sync();
-  expect(records.get("agent-a")?.title).toBe("ai title");
-  records.set("agent-a", { ...records.get("agent-a")!, title: "renamed" });
-  setSessions([session("a", 1, { title: "custom title" })]);
-  await sync();
-  expect(records.get("agent-a")).toMatchObject({
-    title: "renamed",
-    lastActivityAt: new Date(NOW - 60_000).toISOString(),
+  expect(Array.from(t.records.keys()).sort()).toEqual(["agent-older", "agent-recent"]);
+  expect(t.records.get("agent-recent")).toMatchObject({ archivedAt: null });
+  expect(t.row("agent-recent")).toMatchObject({
+    title: "title recent",
+    archivedAt: null,
+    createdAt: new Date(START - DAY - MINUTE).toISOString(),
   });
+  expect(t.records.get("agent-older")).toMatchObject({ workspaceId: "home" });
+  expect(t.records.get("agent-older")?.archivedAt).toBeTruthy();
+  expect(t.workspaces.size).toBe(3);
+});
+
+test("a row leaves the sidebar after a week without a prompt and returns with the next", async () => {
+  const t = await setup();
+  t.setSessions([t.session("a", MINUTE)]);
+  await t.sync();
+  // The session drops out of the listing once newer sessions fill it.
+  t.setSessions([]);
+  t.advance(7 * DAY);
+  await t.sync();
+  expect(t.row("agent-a").archivedAt).toBeTruthy();
+  expect(t.records.get("agent-a")?.archivedAt).toBeTruthy();
+
+  t.advance(DAY);
+  t.setSessions([t.session("a", MINUTE)]);
+  await t.sync();
+  expect(t.row("agent-a").archivedAt).toBeNull();
+  expect(t.records.get("agent-a")?.archivedAt).toBeNull();
+});
+
+test("a row stays where a person left it until the session's next prompt", async () => {
+  const t = await setup();
+  t.setSessions([t.session("a", 2 * MINUTE)]);
+  await t.sync();
+  // Archived after a prompt the sync has not seen yet: that prompt does not restore it.
+  const prompt = t.session("a", 0);
+  t.advance(MINUTE);
+  t.workspaces.set(t.row("agent-a").workspaceId, {
+    ...t.row("agent-a"),
+    archivedAt: new Date(START + MINUTE).toISOString(),
+  });
+  t.setSessions([prompt]);
+  await t.sync();
+  expect(t.row("agent-a").archivedAt).toBeTruthy();
+
+  t.advance(MINUTE);
+  t.setSessions([t.session("a", 0)]);
+  await t.sync();
+  expect(t.row("agent-a").archivedAt).toBeNull();
+});
+
+test("a row someone restores is not aged again", async () => {
+  const t = await setup();
+  t.setSessions([t.session("a", MINUTE)]);
+  await t.sync();
+  t.advance(8 * DAY);
+  await t.sync();
+  t.workspaces.set(t.row("agent-a").workspaceId, { ...t.row("agent-a"), archivedAt: null });
+  t.advance(DAY);
+  await t.sync();
+  expect(t.row("agent-a").archivedAt).toBeNull();
+});
+
+test("an open agent is not aged until it is released", async () => {
+  const t = await setup();
+  t.setSessions([t.session("a", MINUTE)]);
+  await t.sync();
+  t.loaded.add("agent-a");
+  t.advance(8 * DAY);
+  await t.sync();
+  expect(t.row("agent-a").archivedAt).toBeNull();
+  t.loaded.delete("agent-a");
+  await t.sync();
+  expect(t.row("agent-a").archivedAt).toBeTruthy();
+});
+
+test("an older session gets a row with its next prompt", async () => {
+  const t = await setup();
+  t.setSessions([t.session("a", 10 * DAY)]);
+  await t.sync();
+  expect(t.records.get("agent-a")).toMatchObject({ workspaceId: "home" });
+
+  t.setSessions([t.session("a", MINUTE)]);
+  await t.sync();
+  expect(t.records.get("agent-a")).toMatchObject({ archivedAt: null });
+  expect(t.row("agent-a")).toMatchObject({ workspaceId: "row-2", title: "title a" });
+});
+
+test("a deleted record returns only after a newer prompt", async () => {
+  const t = await setup();
+  t.setSessions([t.session("a", 10 * MINUTE)]);
+  await t.sync();
+  t.records.delete("agent-a");
+  await t.sync();
+  expect(t.records.size).toBe(0);
+  t.setSessions([t.session("a", MINUTE)]);
+  await t.sync();
+  expect(t.records.has("agent-a")).toBe(true);
+});
+
+test("titles follow the session until they are renamed in Paseo", async () => {
+  const t = await setup();
+  t.setSessions([t.session("a", 10 * MINUTE, { title: "first prompt" })]);
+  await t.sync();
+  t.setSessions([t.session("a", 5 * MINUTE, { title: "ai title" })]);
+  await t.sync();
+  expect(t.records.get("agent-a")?.title).toBe("ai title");
+  expect(t.row("agent-a").title).toBe("ai title");
+
+  t.workspaces.set(t.row("agent-a").workspaceId, { ...t.row("agent-a"), title: "renamed" });
+  t.setSessions([t.session("a", MINUTE, { title: "custom title" })]);
+  await t.sync();
+  expect(t.row("agent-a").title).toBe("renamed");
+  expect(t.records.get("agent-a")?.title).toBe("custom title");
+});
+
+test("an agent Paseo started only follows the session's activity", async () => {
+  const t = await setup();
+  t.records.set("own", {
+    id: "own",
+    provider: "claude",
+    cwd: CWD,
+    workspaceId: "home-2",
+    createdAt: new Date(START - DAY).toISOString(),
+    updatedAt: new Date(START - DAY).toISOString(),
+    lastActivityAt: new Date(START - DAY).toISOString(),
+    title: "mine",
+    labels: {},
+    lastStatus: "closed",
+    persistence: { provider: "claude", sessionId: "a" },
+  } as StoredAgentRecord);
+  t.setSessions([t.session("a", MINUTE, { title: "other" })]);
+  await t.sync();
+  expect(t.records.get("own")).toMatchObject({
+    title: "mine",
+    workspaceId: "home-2",
+    lastActivityAt: new Date(START - MINUTE).toISOString(),
+  });
+  expect(t.workspaces.size).toBe(2);
 });

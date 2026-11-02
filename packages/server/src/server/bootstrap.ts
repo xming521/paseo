@@ -1499,7 +1499,37 @@ export async function createPaseoDaemon(
           providers: localSessionProviders,
           agentManager,
           agentStorage,
-          workspaces: async () => (await workspaceRegistry?.list()) ?? [],
+          workspaces: {
+            list: () => workspaceRegistry.list(),
+            create: async ({ projectId, cwd, title, createdAt }) => {
+              const workspace = await workspaceProvisioning.createWorkspaceForDirectory(
+                cwd,
+                title,
+                projectId,
+                { createdAt: createdAt.toISOString() },
+              );
+              await emitWorkspaceUpdatesExternal([workspace.workspaceId]);
+              return workspace;
+            },
+            setArchived: async (workspaceId, archived) => {
+              if (archived) {
+                await archiveWorkspaceRecordExternal(workspaceId);
+              } else {
+                const workspace = await workspaceRegistry.get(workspaceId);
+                if (workspace)
+                  await workspaceProvisioning.ensureWorkspaceRecordUnarchived(workspace);
+              }
+              await emitWorkspaceUpdatesExternal([workspaceId]);
+            },
+            setTitle: async (workspaceId, title) => {
+              await workspaceRegistry.update(workspaceId, (existing) => ({
+                ...existing,
+                title,
+                updatedAt: new Date().toISOString(),
+              }));
+              await emitWorkspaceUpdatesExternal([workspaceId]);
+            },
+          },
           statePath: path.join(config.paseoHome, "local-sessions.json"),
           logger,
         })

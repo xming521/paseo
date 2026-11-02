@@ -563,6 +563,14 @@ export interface ImportableProviderSession {
   lastActivityAt: Date;
   /** False when only a script or SDK ever drove the session, so no person talked in it. */
   interactive?: boolean;
+  /** False when the model never answered, as in a session that holds only local commands. */
+  replied?: boolean;
+  /**
+   * When the first and the latest prompt were sent. Unlike lastActivityAt, these do not move when
+   * a provider rewrites the session without a new turn.
+   */
+  firstPromptAt?: Date;
+  lastPromptAt?: Date;
 }
 
 export interface ImportProviderSessionInput {
