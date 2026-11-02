@@ -970,8 +970,13 @@ export class AgentManager {
    * Called after a closed agent resumes from persistence. When another client continued the
    * session meanwhile, the timeline is replaced with the provider's history. The resumed runtime
    * read the session from disk, so its conversation is already current.
+   * `replayed` says the load just built the timeline from that history. It is current then, and
+   * the provider replays its history only once, so replacing it would leave it empty.
    */
-  async reconcileExternalTranscript(agentId: string): Promise<void> {
+  async reconcileExternalTranscript(
+    agentId: string,
+    options?: { replayed?: boolean },
+  ): Promise<void> {
     const agent = this.agents.get(agentId);
     if (!agent) return;
     const marker = await this.readTranscriptMarker(agent.session);
@@ -979,7 +984,7 @@ export class AgentManager {
     const recorded = this.transcriptMarkers.get(agentId);
     this.transcriptMarkers.set(agentId, marker);
     // An unknown marker means the daemon restarted since this timeline was built.
-    if (recorded === marker) return;
+    if (options?.replayed || recorded === marker) return;
     this.logger.info({ agentId }, "Session changed outside Paseo; replacing timeline");
     await this.hydrateTimelineFromProvider(agentId, {
       force: true,
@@ -3590,12 +3595,13 @@ export class AgentManager {
   /**
    * Hydrates the runtime timeline from provider history. No-ops if already hydrated.
    */
+  /** Resolves true when the timeline was rebuilt from the provider's history. */
   async hydrateTimelineFromProvider(
     agentId: string,
     options?: HydrateTimelineOptions,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const agent = this.requireSessionAgent(agentId);
-    await this.hydrateTimelineFromLegacyProviderHistory(agent, options);
+    return await this.hydrateTimelineFromLegacyProviderHistory(agent, options);
   }
 
   async rewind(agentId: string, messageId: string, mode: RewindMode): Promise<void> {
@@ -4457,9 +4463,9 @@ export class AgentManager {
   private async hydrateTimelineFromLegacyProviderHistory(
     agent: ActiveManagedAgent,
     options?: HydrateTimelineOptions,
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (agent.historyPrimed && !options?.force) {
-      return;
+      return false;
     }
 
     const broadcast = options?.broadcast ?? false;
@@ -4471,10 +4477,11 @@ export class AgentManager {
         typeof broadcast === "function" ? broadcast() : broadcast,
         typeof broadcastTimeline === "function" ? broadcastTimeline() : broadcastTimeline,
       );
-      return;
+      return true;
     }
 
     await this.primeTimelineFromLegacyProviderHistory(agent, broadcast);
+    return true;
   }
 
   private async forceHydrateTimelineFromLegacyProviderHistory(

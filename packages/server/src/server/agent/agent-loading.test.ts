@@ -199,3 +199,58 @@ test("loads an archived agent's history after its working directory is removed",
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("opening a session Paseo never loaded keeps the history it read", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "agent-loading-replay-"));
+  const logger = createTestLogger();
+  const storage = new AgentStorage(path.join(root, "agents"), logger);
+  const baseClient = createTestAgentClients().codex;
+  if (!baseClient) {
+    throw new Error("expected Codex test client");
+  }
+  const client: AgentClient = {
+    ...baseClient,
+    resumeSession: async (handle, overrides, launchContext) => {
+      const session = await baseClient.resumeSession(handle, overrides, launchContext);
+      // Providers replay their history once, as Claude's session does.
+      let replayed = false;
+      return Object.assign(session, {
+        async *streamHistory() {
+          if (replayed) return;
+          replayed = true;
+          yield {
+            type: "timeline" as const,
+            provider: "codex" as const,
+            item: { type: "user_message" as const, text: "from the terminal", messageId: "u1" },
+          };
+        },
+        readTranscriptMarker: async () => "written-outside",
+      });
+    },
+    fetchCatalog: async (options) => await baseClient.fetchCatalog(options),
+    isAvailable: async () => await baseClient.isAvailable(),
+  };
+  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+
+  try {
+    const record = await manager.recordExternalSession({
+      provider: "codex",
+      providerHandleId: "thread-1",
+      cwd: root,
+      workspaceId: "workspace-row",
+      title: "from the terminal",
+      lastActivityAt: new Date(),
+      archived: false,
+    });
+
+    await ensureAgentLoaded(record.id, { agentManager: manager, agentStorage: storage, logger });
+
+    expect(manager.fetchTimeline(record.id).rows.map((row) => row.item)).toEqual([
+      expect.objectContaining({ type: "user_message", text: "from the terminal" }),
+    ]);
+  } finally {
+    await manager.flush().catch(() => undefined);
+    await storage.flush().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -139,11 +139,11 @@ export async function ensureAgentLoaded(
       deps.logger.info({ agentId, provider: record.provider }, "Agent created from stored config");
     }
 
-    await deps.agentManager.hydrateTimelineFromProvider(agentId, {
+    const replayed = await deps.agentManager.hydrateTimelineFromProvider(agentId, {
       broadcast: () => pendingOptions.broadcastTimeline,
     });
     if (handle && !record.archivedAt) {
-      await deps.agentManager.reconcileExternalTranscript?.(agentId);
+      await deps.agentManager.reconcileExternalTranscript?.(agentId, { replayed });
     }
     return deps.agentManager.getAgent(agentId) ?? snapshot;
   })();
