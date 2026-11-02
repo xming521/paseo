@@ -85,6 +85,7 @@ import {
 import { normalizeProviderReplayTimestamp } from "../../provider-history-timestamps.js";
 import { claudeConfigDir, claudeProjectDirSync, claudeTranscriptPath } from "./project-dir.js";
 import { readClaudeTranscriptMarker } from "../../transcript-marker.js";
+import { releaseClaudeBackgroundHolder } from "./background-holder.js";
 import { THINKING_APPLIES_NEXT_TURN_NOTICE } from "../../provider-notices.js";
 import {
   isProviderImageMarkdown,
@@ -3482,6 +3483,9 @@ class ClaudeAgentSession implements AgentSession {
 
     const input = createAsyncMessageInput<SDKUserMessage>();
     const options = await this.buildOptions(launchMode);
+    if (options.resume) {
+      await this.releaseBackgroundHolder(options.resume);
+    }
     this.logger.debug({ options: summarizeClaudeOptionsForLog(options) }, "claude query");
     this.input = input;
     this.runtimeSafety.reset();
@@ -5503,6 +5507,27 @@ class ClaudeAgentSession implements AgentSession {
 
   ownsTranscriptMarker(marker: string): boolean {
     return this.streamedTranscriptUuids.has(marker);
+  }
+
+  /** Stops an idle Claude Code background job that would make the resume fail. */
+  private async releaseBackgroundHolder(sessionId: string): Promise<void> {
+    const jobId = await releaseClaudeBackgroundHolder({
+      configDir: claudeConfigDir(this.harnessEnvironment),
+      sessionId,
+      stopJob: async (id) => {
+        const launch = await resolveProviderLaunch({
+          commandConfig: this.runtimeSettings?.command,
+          defaultBinary: "claude",
+        });
+        await execCommand(await this.resolveBinary(), [...launch.args, "stop", id], {
+          env: this.harnessEnvironment,
+          timeout: 15_000,
+        });
+      },
+    });
+    if (jobId) {
+      this.logger.info({ sessionId, jobId }, "Stopped the Claude Code background session");
+    }
   }
 
   private async resolveHistoryPath(sessionId: string): Promise<string | null> {
