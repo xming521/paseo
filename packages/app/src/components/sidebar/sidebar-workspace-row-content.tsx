@@ -1,8 +1,9 @@
 import { memo, useMemo, useCallback, useState, type ReactNode } from "react";
 import { Text, View, type ViewStyle } from "react-native";
-import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { StyleSheet, useUnistyles, withUnistyles } from "react-native-unistyles";
 import { CircleAlert, Folder, FolderGit2, Monitor } from "lucide-react-native";
 import { ProjectStatusIndicator } from "@/components/sidebar/project-leading-visual";
+import { useProviderIcon } from "@/components/provider-icons";
 import type { SidebarSurfaceBackdrop } from "@/styles/surface-backdrop";
 import {
   WorkspaceMetaRow,
@@ -150,6 +151,8 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
           <WorkspaceStatusIndicator
             bucket={workspace.statusBucket}
             workspaceKind={workspace.workspaceKind}
+            provider={workspace.provider ?? null}
+            serverId={workspace.serverId}
             loading={isLoading}
             reserveIdleSpace={reserveIdleStatusIndicatorSpace}
           />
@@ -183,11 +186,15 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
 function WorkspaceStatusIndicator({
   bucket,
   workspaceKind,
+  provider,
+  serverId,
   loading = false,
   reserveIdleSpace = true,
 }: {
   bucket: SidebarWorkspaceEntry["statusBucket"];
   workspaceKind: SidebarWorkspaceEntry["workspaceKind"];
+  provider: string | null;
+  serverId: string;
   loading?: boolean;
   reserveIdleSpace?: boolean;
 }) {
@@ -227,6 +234,16 @@ function WorkspaceStatusIndicator({
     );
   }
 
+  if (bucket === "done" && provider) {
+    // An idle row that holds an agent shows the agent's provider in the slot instead of the
+    // dot, so rows read as Claude Code or Codex at a glance. Any live status takes it back.
+    return (
+      <View style={styles.workspaceStatusDot} testID="workspace-status-indicator-done">
+        <IdleProviderIcon provider={provider} serverId={serverId} />
+      </View>
+    );
+  }
+
   if (bucket === "done") {
     // An idle row still gets a dot rather than an empty slot. Nested rows are marked as
     // workspaces by indentation alone, and with nothing in the leading slot the rail has no
@@ -251,6 +268,12 @@ function WorkspaceStatusIndicator({
       {dotColorStyle ? <StatusDotOverlay dotColorStyle={dotColorStyle} /> : null}
     </View>
   );
+}
+
+function IdleProviderIcon({ provider, serverId }: { provider: string; serverId: string }) {
+  const { theme } = useUnistyles();
+  const ProviderIcon = useProviderIcon(provider, serverId);
+  return <ProviderIcon size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />;
 }
 
 function StatusDotOverlay({ dotColorStyle }: { dotColorStyle: ViewStyle }) {
