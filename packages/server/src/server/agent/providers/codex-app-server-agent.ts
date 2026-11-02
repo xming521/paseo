@@ -143,6 +143,15 @@ function isCodexAlreadyUnarchivedError(error: unknown, threadId: string): boolea
   return message.includes(`no archived rollout found for thread id ${threadId}`);
 }
 
+// Codex lets one app-server write a thread at a time, and the VS Code extension keeps a writer
+// lock on every thread it has open until its extension host restarts. thread/read still works.
+function isCodexThreadWriterBusyError(error: unknown, threadId: string): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes(`thread ${threadId} already has an active writer`);
+}
+
+class CodexThreadWriterBusyError extends Error {}
+
 const TURN_START_TIMEOUT_MS = 90 * 1000;
 const INTERRUPT_TIMEOUT_MS = 2_000;
 const CODEX_PROVIDER = "codex" as const;
@@ -3660,7 +3669,12 @@ export class CodexAppServerAgentSession implements AgentSession {
       await this.loadSkills();
 
       if (this.currentThreadId) {
-        await this.ensureThreadLoaded();
+        try {
+          await this.ensureThreadLoaded();
+        } catch (error) {
+          // Show the history now; sending resumes again and says who holds the thread.
+          if (!(error instanceof CodexThreadWriterBusyError)) throw error;
+        }
         await this.loadPersistedHistory(this.client);
         await this.applyDefaultModelAndThinking();
       }
@@ -4107,6 +4121,14 @@ export class CodexAppServerAgentSession implements AgentSession {
         this.rememberResolvedSandboxPolicy(response);
         this.logger.info({ threadId }, "Unarchived Codex thread to restore active Paseo agent");
         return;
+      }
+      if (isCodexThreadWriterBusyError(error, threadId)) {
+        this.logger.info({ threadId }, "Codex thread is open in another Codex client");
+        throw new CodexThreadWriterBusyError(
+          `Codex thread ${threadId} is open in another Codex client, such as the VS Code ` +
+            "extension. Reload that window or restart its extension host, then send again.",
+          { cause: error },
+        );
       }
       this.logger.warn({ error, threadId }, "Failed to resume persisted Codex thread");
       throw new Error(`Failed to resume Codex thread ${threadId}: ${message}`, { cause: error });

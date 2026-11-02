@@ -1918,6 +1918,42 @@ describe("Codex app-server provider", () => {
     appServer.assertNoErrors();
   });
 
+  test("shows history when another Codex client holds the thread and resumes on send", async () => {
+    const threadRequests: string[] = [];
+    let writerBusy = true;
+    const appServer = createFakeCodexAppServer({
+      "thread/loaded/list": () => ({ data: [] }),
+      "thread/resume": () => {
+        threadRequests.push("thread/resume");
+        if (writerBusy) {
+          return Promise.reject(
+            new Error("thread archived-thread-id already has an active writer"),
+          );
+        }
+        return { thread: { id: "archived-thread-id" } };
+      },
+      "thread/read": () => {
+        threadRequests.push("thread/read");
+        return { thread: { turns: [] } };
+      },
+      "turn/start": () => {
+        threadRequests.push("turn/start");
+        return {};
+      },
+    });
+    const provider = createProviderWithFakeAppServer(appServer);
+
+    const session = await provider.resumeSession(archivedThreadHandle());
+    expect(threadRequests).toEqual(["thread/resume", "thread/read"]);
+
+    await expect(session.startTurn("hello")).rejects.toThrow("open in another Codex client");
+    writerBusy = false;
+    await session.startTurn("hello");
+    expect(threadRequests.slice(2)).toEqual(["thread/resume", "thread/resume", "turn/start"]);
+    await session.close();
+    appServer.assertNoErrors();
+  });
+
   test("closes Codex app-server when archived history hydration fails", async () => {
     const appServer = createFakeCodexAppServer({
       "thread/resume": () =>
