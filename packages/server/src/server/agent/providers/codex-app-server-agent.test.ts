@@ -6910,6 +6910,44 @@ describe("Codex importable sessions", () => {
     appServer.assertNoErrors();
   });
 
+  test("marks threads a script started as not interactive", async () => {
+    const thread = (id: string, originator?: string) => ({
+      id,
+      cwd: "/workspace/project-a",
+      preview: id,
+      createdAt: 1,
+      updatedAt: 1,
+      ...(originator ? { originator } : {}),
+    });
+    const appServer = createFakeCodexAppServer({
+      "thread/list": cappedThreadListHandler([
+        thread("tui", "codex-tui"),
+        thread("editor", "codex_vscode"),
+        thread("desktop", "Codex Desktop"),
+        thread("exec", "codex_exec"),
+        thread("sdk", "codex_sdk_ts"),
+        thread("unknown"),
+      ]),
+    });
+    const provider = createProviderWithFakeAppServer(appServer);
+
+    const sessions = await provider.listImportableSessions({ limit: 10 });
+
+    expect(
+      Object.fromEntries(
+        sessions.map((session) => [session.providerHandleId, session.interactive]),
+      ),
+    ).toEqual({
+      tui: true,
+      editor: true,
+      desktop: true,
+      exec: false,
+      sdk: false,
+      unknown: undefined,
+    });
+    appServer.assertNoErrors();
+  });
+
   test("keeps the scanned window on the most recently used threads", async () => {
     const threads = threadsUsedInReverseCreationOrder(550);
     const appServer = createFakeCodexAppServer({

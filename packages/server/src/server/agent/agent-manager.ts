@@ -59,7 +59,7 @@ import {
   type ListImportableSessionsOptions,
 } from "./agent-sdk-types.js";
 import { buildArchivedAgentRecord, type ArchivedStoredAgentRecord } from "./agent-archive.js";
-import { toStoredAgentRecord } from "./agent-projections.js";
+import { toExternalSessionRecord, toStoredAgentRecord } from "./agent-projections.js";
 import type { StoredAgentRecord, AgentStorage } from "./agent-storage.js";
 import type { AgentOwner } from "./agent-owner.js";
 import {
@@ -1615,6 +1615,58 @@ export class AgentManager {
     labels?: Record<string, string>;
   }): Promise<ManagedAgent> {
     return this.trackAgentRegistrationOperation(this.importProviderSessionInternal(input));
+  }
+
+  /** Records a provider session that runs outside Paseo, without loading it. */
+  async recordExternalSession(input: {
+    provider: AgentProvider;
+    providerHandleId: string;
+    cwd: string;
+    workspaceId: string;
+    title: string | null;
+    lastActivityAt: Date;
+  }): Promise<StoredAgentRecord> {
+    if (!this.registry) {
+      throw new Error("Agent storage is not configured");
+    }
+    this.requireEnabledProvider(input.provider);
+    const id = validateAgentId(this.idFactory(), "recordExternalSession");
+    // The model stays unset, so opening the session later resolves the default then.
+    const config = await this.normalizeConfig(
+      { provider: input.provider, cwd: input.cwd },
+      { resolveDefaultModel: false },
+    );
+    const record = toExternalSessionRecord({ ...input, id, config });
+    await this.registry.upsert(record);
+    this.dispatchStoredAgentState(record);
+    return record;
+  }
+
+  /**
+   * Brings an agent that is not loaded up to its session's newer activity time and, when given,
+   * title. A loaded agent keeps its own state.
+   */
+  async refreshStoredActivity(
+    agentId: string,
+    update: { lastActivityAt: Date; title?: string | null },
+  ): Promise<void> {
+    if (!this.registry || this.agents.has(agentId)) return;
+    const at = update.lastActivityAt.toISOString();
+    const record = await this.registry.update(agentId, (current) => {
+      if (this.agents.has(agentId)) return null;
+      const newer =
+        Date.parse(current.lastActivityAt ?? current.updatedAt) < update.lastActivityAt.getTime();
+      const retitle = update.title !== undefined && update.title !== current.title;
+      if (!newer && !retitle) return null;
+      return {
+        ...current,
+        ...(newer ? { lastActivityAt: at, updatedAt: at } : {}),
+        ...(retitle ? { title: update.title } : {}),
+      };
+    });
+    if (record && !record.internal && !this.agents.has(agentId)) {
+      this.dispatchStoredAgentState(record);
+    }
   }
 
   private async importProviderSessionInternal(input: {

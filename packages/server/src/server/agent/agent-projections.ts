@@ -347,6 +347,47 @@ export function selectAgentListItems(
     .slice(0, options.limit ?? 50);
 }
 
+/**
+ * The record of a provider session that runs outside Paseo. It is archived, so it lists under
+ * History rather than opening as a tab, and its persistence handle is the one an import builds.
+ */
+export function toExternalSessionRecord(input: {
+  id: string;
+  provider: AgentProvider;
+  providerHandleId: string;
+  cwd: string;
+  workspaceId: string;
+  title: string | null;
+  lastActivityAt: Date;
+  config: AgentSessionConfig;
+}): StoredAgentRecord {
+  const at = input.lastActivityAt.toISOString();
+  const config = buildSerializableConfig(input.config);
+  return {
+    id: input.id,
+    provider: input.provider,
+    cwd: input.cwd,
+    workspaceId: input.workspaceId,
+    createdAt: at,
+    updatedAt: at,
+    lastActivityAt: at,
+    lastUserMessageAt: null,
+    title: input.title,
+    labels: {},
+    lastStatus: "closed",
+    lastModeId: config?.modeId ?? null,
+    config,
+    persistence: sanitizePersistenceHandle({
+      provider: input.provider,
+      sessionId: input.providerHandleId,
+      nativeHandle: input.providerHandleId,
+      metadata: { ...input.config, provider: input.provider, cwd: input.cwd },
+    }),
+    internal: false,
+    archivedAt: new Date().toISOString(),
+  };
+}
+
 export function toRecentProviderSessionDescriptorPayload(
   session: ImportableProviderSession & { provider: string },
   options: RecentProviderSessionProjectionOptions,

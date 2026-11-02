@@ -561,6 +561,8 @@ export interface ImportableProviderSession {
   firstPromptPreview: string | null;
   lastPromptPreview: string | null;
   lastActivityAt: Date;
+  /** False when only a script or SDK ever drove the session, so no person talked in it. */
+  interactive?: boolean;
 }
 
 export interface ImportProviderSessionInput {

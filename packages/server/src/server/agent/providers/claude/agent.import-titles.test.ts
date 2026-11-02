@@ -237,3 +237,36 @@ describe("importing a renamed Claude session", () => {
     await expect(importSession(sessionId)).rejects.toThrow();
   });
 });
+
+describe("listing Claude sessions", () => {
+  test("marks a session interactive when a person typed into it", async () => {
+    const entry = (sessionId: string, entrypoint: string) => ({
+      ...userRecord({ sessionId, content: "Review this project" }),
+      entrypoint,
+    });
+    await writeSession({ sessionId: "sdk-only", records: [entry("sdk-only", "sdk-ts")] });
+    await writeSession({
+      sessionId: "sdk-then-cli",
+      records: [entry("sdk-then-cli", "sdk-cli"), entry("sdk-then-cli", "cli")],
+    });
+    await writeSession({
+      sessionId: "no-entrypoint",
+      records: [userRecord({ sessionId: "no-entrypoint", content: "Review this project" })],
+    });
+    const client = new ClaudeAgentClient({
+      logger: createTestLogger(),
+      resolveBinary: async () => "/test/claude/bin",
+    });
+
+    const sessions = await client.listImportableSessions({ limit: 10, cwd: SESSION_CWD });
+    const interactive = Object.fromEntries(
+      sessions.map((session) => [session.providerHandleId, session.interactive]),
+    );
+
+    expect(interactive).toEqual({
+      "sdk-only": false,
+      "sdk-then-cli": true,
+      "no-entrypoint": undefined,
+    });
+  });
+});

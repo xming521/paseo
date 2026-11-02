@@ -1,7 +1,5 @@
-import {
-  createIdleRuntimeCleanup,
-  parseIdlePeriods,
-} from "./agent/idle-runtime-cleanup/index.js";
+import { createIdleRuntimeCleanup, parseIdlePeriods } from "./agent/idle-runtime-cleanup/index.js";
+import { parseLocalSessionProviders, startLocalSessionSync } from "./agent/local-session-sync.js";
 import {
   createFinishSubscriptions,
   createFinishObservation,
@@ -1494,6 +1492,19 @@ export async function createPaseoDaemon(
     idleRuntimeCleanup,
   );
 
+  const localSessionProviders = parseLocalSessionProviders(process.env.PASEO_LOCAL_SESSIONS);
+  const localSessionSync =
+    localSessionProviders.length > 0
+      ? startLocalSessionSync({
+          providers: localSessionProviders,
+          agentManager,
+          agentStorage,
+          workspaces: async () => (await workspaceRegistry?.list()) ?? [],
+          statePath: path.join(config.paseoHome, "local-sessions.json"),
+          logger,
+        })
+      : null;
+
   const createAgentToolHostDependencies = (
     runtime: PaseoToolRuntimeContext,
   ): PaseoToolHostDependencies => ({
@@ -1953,6 +1964,7 @@ export async function createPaseoDaemon(
     scriptHealthMonitor.stop();
     unsubscribeIdleRuntimeCleanup();
     await idleRuntimeCleanup.close();
+    await localSessionSync?.close();
     // Freeze both ingress and registration before taking the agent closure snapshot.
     wsServer?.prepareForShutdown();
     await finishSubscriptions.close();

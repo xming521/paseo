@@ -155,13 +155,30 @@ export class AgentStorage {
     await this.queueRecordWrite(record);
   }
 
+  /**
+   * Rewrites an existing record inside its write queue, so the change applies to the newest
+   * version. `mutate` returns null to leave the record as it is.
+   */
+  async update(
+    agentId: string,
+    mutate: (record: StoredAgentRecord) => StoredAgentRecord | null,
+  ): Promise<StoredAgentRecord | null> {
+    await this.load();
+    let written: StoredAgentRecord | null = null;
+    await this.queueRecordMutation(agentId, (existing) => {
+      written = existing ? mutate(existing) : null;
+      return written;
+    });
+    return written;
+  }
+
   private queueRecordWrite(record: StoredAgentRecord): Promise<void> {
     return this.queueRecordMutation(record.id, () => record);
   }
 
   private queueRecordMutation(
     agentId: string,
-    mutate: (existing: StoredAgentRecord | null) => StoredAgentRecord,
+    mutate: (existing: StoredAgentRecord | null) => StoredAgentRecord | null,
   ): Promise<void> {
     const prev = this.pendingWrites.get(agentId) ?? Promise.resolve();
     const next = prev.then(async () => {
@@ -170,7 +187,7 @@ export class AgentStorage {
       }
 
       const record = mutate(this.cache.get(agentId) ?? null);
-      await this.writeRecord(record);
+      if (record) await this.writeRecord(record);
       return undefined;
     });
 

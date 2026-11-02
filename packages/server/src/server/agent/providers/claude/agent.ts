@@ -6667,6 +6667,8 @@ interface ClaudeSessionDescriptorAccumulator {
   firstPromptTitle: string | null;
   firstPromptPreview: string | null;
   lastPromptPreview: string | null;
+  /** Null until a user entry names its entrypoint. */
+  interactive: boolean | null;
 }
 
 const CLAUDE_IMPORT_DESCRIPTOR_RECORD_PATTERN = /"type"\s*:\s*"(?:user|custom-title|ai-title)"/;
@@ -6712,6 +6714,11 @@ function applyClaudeSessionEntryToAccumulator(
     acc.aiTitle = normalizeClaudeSessionTitle(entry.aiTitle);
     return;
   }
+  if (entry.type === "user" && typeof entry.entrypoint === "string") {
+    // The Agent SDKs record entrypoints named sdk-*; every other entrypoint is a UI a person
+    // types into, such as the terminal, an editor extension or a web client.
+    acc.interactive = acc.interactive === true || !entry.entrypoint.startsWith("sdk-");
+  }
   if (entry.type === "user" && entry.message) {
     const text = extractClaudeUserText(entry.message);
     if (text) {
@@ -6737,6 +6744,7 @@ async function parseClaudeSessionDescriptor(
     firstPromptTitle: null,
     firstPromptPreview: null,
     lastPromptPreview: null,
+    interactive: null,
   };
 
   // Keep only the current record, including image records larger than a read chunk.
@@ -6789,6 +6797,7 @@ async function parseClaudeSessionDescriptor(
     firstPromptPreview: acc.firstPromptPreview,
     lastPromptPreview: acc.lastPromptPreview,
     lastActivityAt: mtime,
+    ...(acc.interactive === null ? {} : { interactive: acc.interactive }),
   };
 }
 

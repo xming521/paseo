@@ -154,6 +154,10 @@ const CODEX_NON_ORIGINATING_APP_SERVER_CLIENT_INFO = {
   title: "Codex App Server Daemon",
   version: "0.0.0",
 } as const;
+// Codex names a thread's originator after the client that started it: codex_cli_rs or codex-tui
+// for the terminal, codex_vscode for the editor, Codex Desktop for the app, codex_exec for
+// `codex exec` and codex_sdk_<language> for the SDKs. The last two run scripts, not people.
+const CODEX_SCRIPTED_ORIGINATOR = /(?:^|_)(?:exec|sdk)(?:_|$)/;
 const ASSISTANT_MESSAGE_BOUNDARY_MARKDOWN = "\n\n---\n\n";
 const MAX_PENDING_SUB_AGENT_THREADS = 32;
 const MAX_PENDING_SUB_AGENT_NOTIFICATIONS_PER_THREAD = 128;
@@ -7445,8 +7449,10 @@ export class CodexAppServerAgentClient implements AgentClient {
         const cwd = typeof thread.cwd === "string" ? thread.cwd : process.cwd();
         const preview = typeof thread.preview === "string" ? thread.preview : null;
         const title = typeof thread.name === "string" && thread.name.trim() ? thread.name : preview;
+        const originator = typeof thread.originator === "string" ? thread.originator : null;
 
         return {
+          ...(originator ? { interactive: !CODEX_SCRIPTED_ORIGINATOR.test(originator) } : {}),
           providerHandleId: threadId,
           cwd,
           title,
