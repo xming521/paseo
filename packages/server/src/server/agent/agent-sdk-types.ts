@@ -558,6 +558,8 @@ export interface ImportableProviderSession {
   providerHandleId: string;
   cwd: string;
   title: string | null;
+  /** True when someone named the session in the provider, as opposed to a derived title. */
+  named?: boolean;
   firstPromptPreview: string | null;
   lastPromptPreview: string | null;
   lastActivityAt: Date;

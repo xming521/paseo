@@ -1668,12 +1668,15 @@ export class AgentManager {
       if (this.agents.has(agentId)) return null;
       const next = { ...current };
       const activity = update.lastActivityAt;
-      if (
-        activity &&
-        Date.parse(current.lastActivityAt ?? current.updatedAt) < activity.getTime()
-      ) {
+      if (activity) {
         const at = activity.toISOString();
-        Object.assign(next, { lastActivityAt: at, lastUserMessageAt: at, updatedAt: at });
+        if (Date.parse(current.lastActivityAt ?? current.updatedAt) < activity.getTime()) {
+          Object.assign(next, { lastActivityAt: at, updatedAt: at });
+        }
+        // Opening an agent moves its activity without a prompt, so the prompt time moves on its own.
+        if ((Date.parse(current.lastUserMessageAt ?? "") || 0) < activity.getTime()) {
+          next.lastUserMessageAt = at;
+        }
       }
       if (update.title !== undefined) next.title = update.title;
       if (update.workspaceId !== undefined) next.workspaceId = update.workspaceId;

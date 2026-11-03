@@ -7470,7 +7470,8 @@ export class CodexAppServerAgentClient implements AgentClient {
         const threadId = typeof thread.id === "string" ? thread.id : "";
         const cwd = typeof thread.cwd === "string" ? thread.cwd : process.cwd();
         const preview = typeof thread.preview === "string" ? thread.preview : null;
-        const title = typeof thread.name === "string" && thread.name.trim() ? thread.name : preview;
+        const named = typeof thread.name === "string" && thread.name.trim() !== "";
+        const title = named ? (thread.name as string) : preview;
         const originator = typeof thread.originator === "string" ? thread.originator : null;
         // Codex moves updatedAt whenever a thread is rewritten, including when one is only
         // opened. recencyAt moves with the person's turns.
@@ -7484,6 +7485,7 @@ export class CodexAppServerAgentClient implements AgentClient {
           providerHandleId: threadId,
           cwd,
           title,
+          ...(named ? { named } : {}),
           firstPromptPreview: preview,
           lastPromptPreview: preview,
           lastActivityAt: new Date(

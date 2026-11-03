@@ -17,7 +17,8 @@ import { isMetadataGenerationSession } from "./import-sessions.js";
 // - An older session gets an archived agent in the directory's own workspace, so it lists only
 //   under History. A new prompt gives it a row.
 // Records follow prompts made outside Paseo, and titles follow the session's until someone renames
-// them in Paseo. A row or record someone archives or deletes stays that way until the session has
+// them in Paseo. An agent Paseo started keeps Paseo's title until someone names its session
+// outside Paseo. A row or record someone archives or deletes stays that way until the session has
 // a newer prompt. Archiving here never archives the provider's own copy of a session.
 
 const SYNC_INTERVAL_MS = 60_000;
@@ -41,6 +42,8 @@ interface SeenSession {
   workspaceId?: string;
   /** The sync archived the row for age, so a row someone restores stays. */
   aged?: boolean;
+  /** Paseo started or imported the session's agent, so the sync made no row or record for it. */
+  own?: boolean;
 }
 type SeenSessions = Record<string, SeenSession>;
 
@@ -50,6 +53,7 @@ export interface SyncWorkspace {
   cwd: string;
   title: string | null;
   createdAt: string;
+  updatedAt: string;
   archivedAt: string | null;
   background?: boolean;
 }
@@ -103,7 +107,17 @@ export function startLocalSessionSync(options: {
     const workspaceList = await workspaces.list();
     const workspaceById = new Map(workspaceList.map((w) => [w.workspaceId, w] as const));
     const rowIds = new Set(Object.values(seen).flatMap((entry) => entry.workspaceId ?? []));
-    const byHandle = indexByProviderHandle(await options.agentStorage.list());
+    const records = await options.agentStorage.list();
+    const byHandle = indexByProviderHandle(records);
+    const agentsPerWorkspace = new Map<string, number>();
+    for (const record of records) {
+      if (record.workspaceId && !record.internal) {
+        agentsPerWorkspace.set(
+          record.workspaceId,
+          (agentsPerWorkspace.get(record.workspaceId) ?? 0) + 1,
+        );
+      }
+    }
     let added = 0;
 
     async function addRow(session: ImportableProviderSession, home: SyncWorkspace, at: number) {
@@ -145,9 +159,22 @@ export function startLocalSessionSync(options: {
         return;
       }
 
-      if (!last) {
-        // Paseo started or imported this agent, so only its activity follows the session.
-        await agentManager.updateExternalSession(record.id, { lastActivityAt: new Date(at) });
+      if (!last || last.own) {
+        // Paseo started or imported this agent, so its activity follows the session, and its title
+        // only a name someone gave the session. A row renamed after that name's prompt keeps its
+        // own, and a workspace other agents share keeps its name.
+        const update: Parameters<SyncAgentManager["updateExternalSession"]>[1] = {
+          lastActivityAt: new Date(at),
+        };
+        const row = record.workspaceId ? workspaceById.get(record.workspaceId) : undefined;
+        if (session.named && session.title !== last?.title && at > timeOf(row?.updatedAt)) {
+          update.title = session.title;
+          if (row && row.title !== session.title && agentsPerWorkspace.get(row.workspaceId) === 1) {
+            await workspaces.setTitle(row.workspaceId, session.title);
+          }
+        }
+        await agentManager.updateExternalSession(record.id, update);
+        seen[key] = { at: Math.max(last?.at ?? 0, at), title: session.title, own: true };
         return;
       }
 

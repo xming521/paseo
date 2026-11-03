@@ -6819,6 +6819,7 @@ async function parseClaudeSessionDescriptor(
       acc.aiTitle ??
       normalizeClaudeSessionTitle(acc.firstPromptTitle) ??
       `Claude session ${sessionId.slice(0, 8)}`,
+    ...(acc.customTitle ? { named: true } : {}),
     firstPromptPreview: acc.firstPromptPreview,
     lastPromptPreview: acc.lastPromptPreview,
     lastActivityAt: mtime,

@@ -19,6 +19,7 @@ interface FakeSession {
   providerHandleId: string;
   cwd: string;
   title: string | null;
+  named?: boolean;
   lastActivityAt: Date;
   firstPromptAt?: Date;
   lastPromptAt?: Date;
@@ -41,6 +42,7 @@ async function setup() {
     cwd: CWD,
     title: null,
     createdAt: new Date(createdAt).toISOString(),
+    updatedAt: new Date(createdAt).toISOString(),
     archivedAt: null,
   });
   // Listed newest first: sessions still belong to the oldest workspace for the directory.
@@ -98,6 +100,7 @@ async function setup() {
           title,
           archivedAt: null,
           createdAt: createdAt.toISOString(),
+          updatedAt: iso(),
         };
         workspaces.set(workspace.workspaceId, workspace);
         return workspace;
@@ -109,7 +112,7 @@ async function setup() {
         });
       },
       setTitle: async (workspaceId, title) => {
-        workspaces.set(workspaceId, { ...workspaces.get(workspaceId)!, title });
+        workspaces.set(workspaceId, { ...workspaces.get(workspaceId)!, title, updatedAt: iso() });
       },
     },
     statePath: path.join(dir, "local-sessions.json"),
@@ -281,21 +284,26 @@ test("titles follow the session until they are renamed in Paseo", async () => {
   expect(t.records.get("agent-a")?.title).toBe("custom title");
 });
 
-test("an agent Paseo started only follows the session's activity", async () => {
-  const t = await setup();
-  t.records.set("own", {
-    id: "own",
+function ownAgent(workspaceId: string, id = "own", handle = "a"): StoredAgentRecord {
+  const at = new Date(START - DAY).toISOString();
+  return {
+    id,
     provider: "claude",
     cwd: CWD,
-    workspaceId: "home-2",
-    createdAt: new Date(START - DAY).toISOString(),
-    updatedAt: new Date(START - DAY).toISOString(),
-    lastActivityAt: new Date(START - DAY).toISOString(),
+    workspaceId,
+    createdAt: at,
+    updatedAt: at,
+    lastActivityAt: at,
     title: "mine",
     labels: {},
     lastStatus: "closed",
-    persistence: { provider: "claude", sessionId: "a" },
-  } as StoredAgentRecord);
+    persistence: { provider: "claude", sessionId: handle },
+  } as StoredAgentRecord;
+}
+
+test("an agent Paseo started follows the session's activity but not its derived title", async () => {
+  const t = await setup();
+  t.records.set("own", ownAgent("home-2"));
   t.setSessions([t.session("a", MINUTE, { title: "other" })]);
   await t.sync();
   expect(t.records.get("own")).toMatchObject({
@@ -304,4 +312,46 @@ test("an agent Paseo started only follows the session's activity", async () => {
     lastActivityAt: new Date(START - MINUTE).toISOString(),
   });
   expect(t.workspaces.size).toBe(2);
+});
+
+test("an agent Paseo started takes a name given to its session outside Paseo", async () => {
+  const t = await setup();
+  t.workspaces.set("own-row", {
+    ...t.workspaces.get("home-2")!,
+    workspaceId: "own-row",
+    title: "paseo",
+  });
+  t.records.set("own", ownAgent("own-row"));
+  t.setSessions([t.session("a", MINUTE, { title: "terminal name", named: true })]);
+  await t.sync();
+  expect(t.records.get("own")?.title).toBe("terminal name");
+  expect(t.row("own").title).toBe("terminal name");
+
+  // Renamed in Paseo after that prompt: the same name does not come back.
+  t.advance(MINUTE);
+  t.workspaces.set("own-row", {
+    ...t.row("own"),
+    title: "renamed",
+    updatedAt: new Date(START + MINUTE).toISOString(),
+  });
+  t.advance(MINUTE);
+  t.setSessions([t.session("a", 0, { title: "terminal name", named: true })]);
+  await t.sync();
+  expect(t.row("own").title).toBe("renamed");
+
+  // A newer name with a newer prompt does.
+  t.advance(MINUTE);
+  t.setSessions([t.session("a", 0, { title: "newer name", named: true })]);
+  await t.sync();
+  expect(t.row("own").title).toBe("newer name");
+});
+
+test("a workspace other agents share keeps its name", async () => {
+  const t = await setup();
+  t.records.set("own", ownAgent("home-2"));
+  t.records.set("other", ownAgent("home-2", "other", "b"));
+  t.setSessions([t.session("a", MINUTE, { title: "terminal name", named: true })]);
+  await t.sync();
+  expect(t.records.get("own")?.title).toBe("terminal name");
+  expect(t.workspaces.get("home-2")?.title).toBeNull();
 });
